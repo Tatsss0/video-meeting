@@ -18,6 +18,12 @@
     .small-muted { color: #6b7280; font-size: 12px; }
     .badge-cap { text-transform: uppercase; letter-spacing: 0.03em; }
     .monospace { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+
+    /* Embed mode for iframe usage */
+    body.embed header { display: none !important; }
+    body.embed #left { display: none !important; }
+    body.embed #app { display: block; }
+    body.embed #main { position: fixed; inset: 0; }
   </style>
 </head>
 <body>
@@ -127,6 +133,7 @@
         room: p.get('room') || '',
         appt: p.get('appt') || '',
         as: p.get('as') || '',
+        embed: p.get('embed') || '',
       };
     }
 
@@ -471,6 +478,9 @@
         }
 
         const query = parseQuery();
+        if (query.embed === '1' || query.embed === 'true') {
+          document.body.classList.add('embed');
+        }
         await detectRole(state.authUser);
 
         // If URL forces role (debug), honor it
@@ -485,6 +495,22 @@
           setStatusBadge('error', 'danger');
           ui.joinStatus.textContent = e?.message || 'Failed to start';
         }
+
+        // Notify parent window about lifecycle when embedded
+        try {
+          const post = (type, payload={}) => {
+            if (window.parent && window.parent !== window) {
+              window.parent.postMessage({ source: 'techmed-video', type, payload }, '*');
+            }
+          };
+          post('ready', { room: state.roomId, appt: state.appointmentId });
+          window.addEventListener('message', (ev) => {
+            if (!ev?.data || ev.data.source === 'techmed-video') return;
+            if (ev.data.type === 'hangup' && state.jitsiApi) {
+              state.jitsiApi.executeCommand('hangup');
+            }
+          });
+        } catch (_) {}
       });
     }
 
