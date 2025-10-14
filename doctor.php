@@ -214,15 +214,56 @@
     if (changed) { saveAllNotifications(); setTimeout(() => { const unread = userNotifications().filter(n => !n.read).length; if (unread === 0) notificationBadge.classList.add('d-none'); }, 300); }
   });
 
-  // Appointments modal: demo rows (kept for now)
-  appointmentBtn.addEventListener('click', () => {
-    appointmentTableBody.innerHTML = '';
-    (demoAppointments || []).forEach(appt => {
-      const row = document.createElement('tr');
-      row.innerHTML = `<td>${appt.doctor}</td><td>${appt.datetime}</td><td><a href="${appt.link}" class="btn btn-success btn-sm">Join Video</a></td>`;
-      appointmentTableBody.appendChild(row);
-    });
+  // Render appointments from Firestore with per-row Join button
+  async function renderAppointmentRowsForUser(uid){
+    appointmentTableBody.innerHTML = '<tr><td colspan="3" class="text-muted">Loading…</td></tr>';
+    try {
+      const snap = await db.collection('appointments').where('patientId','==', uid).get();
+      const items = [];
+      snap.forEach(d => items.push({ id: d.id, ...d.data() }));
+      items.sort((a,b)=>{
+        const at = a.startAt?.toDate ? a.startAt.toDate().getTime() : (a.startAt ? new Date(a.startAt).getTime() : 0);
+        const bt = b.startAt?.toDate ? b.startAt.toDate().getTime() : (b.startAt ? new Date(b.startAt).getTime() : 0);
+        return at - bt;
+      });
+
+      appointmentTableBody.innerHTML = '';
+      if (!items.length) {
+        appointmentTableBody.innerHTML = '<tr><td colspan="3" class="text-muted">No appointments found</td></tr>';
+        return;
+      }
+
+      items.forEach(a => {
+        const doctor = a.doctorName || 'Doctor';
+        const dt = a.startAt?.toDate ? a.startAt.toDate() : (a.startAt ? new Date(a.startAt) : null);
+        const when = dt ? dt.toLocaleString() : '';
+        const status = (a.status || '').toLowerCase();
+        const disabled = status === 'cancelled' || status === 'rejected';
+        const joinUrl = a.roomId ? `index.html?room=${encodeURIComponent(a.roomId)}&as=patient` : `index.html?appt=${encodeURIComponent(a.id)}&as=patient`;
+
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${doctor}</td>
+          <td>${when}</td>
+          <td>
+            <a href="${joinUrl}" class="btn btn-success btn-sm" ${disabled ? 'aria-disabled="true" tabindex="-1"' : ''}>Join Video</a>
+          </td>
+        `;
+        appointmentTableBody.appendChild(row);
+      });
+    } catch (e) {
+      appointmentTableBody.innerHTML = '<tr><td colspan="3" class="text-danger">Failed to load appointments</td></tr>';
+    }
+  }
+
+  // Open modal and populate rows from Firestore
+  appointmentBtn.addEventListener('click', async () => {
     appointmentModal.show();
+    try {
+      const user = firebase.auth().currentUser;
+      if (!user) return;
+      await renderAppointmentRowsForUser(user.uid);
+    } catch (_) {}
   });
 </script>
 
