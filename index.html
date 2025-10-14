@@ -397,57 +397,96 @@
       setRoleBadge();
       setStatusBadge('patient', 'success');
 
-      if (!query.room) {
-        ui.apptTitle.textContent = 'Waiting for your doctor to open the room';
-        ui.apptSub.textContent = 'This page will refresh when ready.';
-        setInfo('No room specified. If you came from your dashboard, please use the Join button when it appears.');
+      // Case 1: Direct room join
+      if (query.room) {
+        // Find appointment by roomId to show details
+        const apptSnap = await dbRef().collection('appointments').where('roomId', '==', query.room).limit(5).get().catch(()=>null);
+        let target = null;
+        if (apptSnap && !apptSnap.empty) {
+          const items = [];
+          apptSnap.forEach(d => items.push({ id: d.id, ...d.data() }));
+          items.sort((a,b)=> (toDateObj(a.startAt)?.getTime()||0) - (toDateObj(b.startAt)?.getTime()||0));
+          const withMe = items.find(a => a.patientId === state.authUser.uid) || items[0];
+          target = withMe;
+        }
+
+        state.appointmentId = target ? target.id : null;
+        if (state.appointmentId) {
+          if (state.unsubAppt) { try { state.unsubAppt(); } catch(_) {} }
+          state.unsubAppt = dbRef().collection('appointments').doc(state.appointmentId).onSnapshot(onApptSnapshot);
+        }
+
+        state.roomId = query.room;
+        ui.roomIdText.textContent = state.roomId;
+
+        const gate = gatePatientJoin(target);
+        if (!gate.allow) {
+          const start = toDateObj(target?.startAt)?.getTime() || 0;
+          const waitUntil = Date.now() + (gate.waitMs || Math.max(0, start - Date.now()));
+          showWait(waitUntil, 'Waiting to join', 'You can join 10 minutes before start.');
+          const unsub = target ? dbRef().collection('appointments').doc(target.id).onSnapshot(d => {
+            const data = d.data();
+            const g = gatePatientJoin({ ...data, id: d.id });
+            if (g.allow && !state.jitsiApi) {
+              hideWait();
+              const displayName = state.authUser.displayName || 'Patient';
+              const subject = data.reason ? `Appointment • ${data.reason}` : 'Appointment';
+              mountJitsi(state.roomId, displayName, subject);
+              unsub && unsub();
+            }
+          }) : null;
+        } else {
+          const displayName = state.authUser.displayName || 'Patient';
+          const subject = target && target.reason ? `Appointment • ${target.reason}` : 'Appointment';
+          mountJitsi(state.roomId, displayName, subject);
+        }
         return;
       }
 
-      // Find appointment by roomId
-      const apptSnap = await dbRef().collection('appointments').where('roomId', '==', query.room).limit(5).get().catch(()=>null);
-      let target = null;
-      if (apptSnap && !apptSnap.empty) {
-        const items = [];
-        apptSnap.forEach(d => items.push({ id: d.id, ...d.data() }));
-        items.sort((a,b)=> (toDateObj(a.startAt)?.getTime()||0) - (toDateObj(b.startAt)?.getTime()||0));
-        // Prefer the one that matches the signed-in patient if available
-        const withMe = items.find(a => a.patientId === state.authUser.uid) || items[0];
-        target = withMe;
-      }
+      // Case 2: Appointment-driven join (wait for roomId)
+      if (query.appt) {
+        const ref = dbRef().collection('appointments').doc(query.appt);
+        const snap = await ref.get().catch(()=>null);
+        if (!snap || !snap.exists) {
+          ui.apptTitle.textContent = 'Appointment not found';
+          ui.apptSub.textContent = '';
+          setInfo('Please check your link or open from your dashboard.');
+          return;
+        }
 
-      state.appointmentId = target ? target.id : null;
-      if (state.appointmentId) {
+        state.appointmentId = snap.id;
         if (state.unsubAppt) { try { state.unsubAppt(); } catch(_) {} }
-        state.unsubAppt = dbRef().collection('appointments').doc(state.appointmentId).onSnapshot(onApptSnapshot);
-      }
+        state.unsubAppt = ref.onSnapshot(doc => {
+          onApptSnapshot(doc);
+          const data = doc.data() || {};
+          if (data.roomId && !state.roomId) {
+            state.roomId = String(data.roomId);
+            ui.roomIdText.textContent = state.roomId;
+          }
 
-      state.roomId = query.room;
-      ui.roomIdText.textContent = state.roomId;
-
-      // Gate join based on appointment timing/status
-      const gate = gatePatientJoin(target);
-      if (!gate.allow) {
-        const start = toDateObj(target?.startAt)?.getTime() || 0;
-        const waitUntil = Date.now() + (gate.waitMs || Math.max(0, start - Date.now()));
-        showWait(waitUntil, 'Waiting to join', 'You can join 10 minutes before start.');
-        // Poll to auto-join when allowed or when doctor opens the call
-        const unsub = dbRef().collection('appointments').doc(target.id).onSnapshot(d => {
-          const data = d.data();
-          const g = gatePatientJoin({ ...data, id: d.id });
-          if (g.allow && !state.jitsiApi) {
-            hideWait();
-            const displayName = state.authUser.displayName || 'Patient';
-            const subject = data.reason ? `Appointment • ${data.reason}` : 'Appointment';
-            mountJitsi(state.roomId, displayName, subject);
-            unsub && unsub();
+          if (state.roomId && !state.jitsiApi) {
+            const gate = gatePatientJoin({ ...data, id: doc.id });
+            if (gate.allow) {
+              hideWait();
+              const displayName = state.authUser.displayName || 'Patient';
+              const subject = data.reason ? `Appointment • ${data.reason}` : 'Appointment';
+              mountJitsi(state.roomId, displayName, subject);
+            } else {
+              const start = toDateObj(data.startAt)?.getTime() || 0;
+              const waitUntil = Date.now() + (gate.waitMs || Math.max(0, start - Date.now()));
+              showWait(waitUntil, 'Waiting to join', 'You can join 10 minutes before start.');
+            }
+          } else if (!state.roomId) {
+            showWait(Date.now() + 60_000, 'Waiting for doctor to open the room', 'This will connect automatically when the room is ready.');
           }
         });
-      } else {
-        const displayName = state.authUser.displayName || 'Patient';
-        const subject = target && target.reason ? `Appointment • ${target.reason}` : 'Appointment';
-        mountJitsi(state.roomId, displayName, subject);
+        return;
       }
+
+      // No parameters: show guidance
+      ui.apptTitle.textContent = 'Waiting for your doctor to open the room';
+      ui.apptSub.textContent = 'Open this from your appointment or notification link.';
+      setInfo('No appointment or room specified.');
     }
 
     async function detectRole(user){
