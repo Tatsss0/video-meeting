@@ -246,7 +246,7 @@
           <td>${doctor}</td>
           <td>${when}</td>
           <td>
-            <a href="${joinUrl}" class="btn btn-success btn-sm" ${disabled ? 'aria-disabled="true" tabindex="-1"' : ''}>Join Video</a>
+            <a href="${joinUrl}" class="btn btn-success btn-sm" ${disabled ? 'aria-disabled="true" tabindex="-1"' : ''}>Join Meeting</a>
           </td>
         `;
         appointmentTableBody.appendChild(row);
