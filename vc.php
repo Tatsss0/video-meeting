@@ -192,34 +192,42 @@
 
       await ensureLocalStreams();
       await createPeer();
+      // Send our ICE candidates as the answerer
       peerConnection.onicecandidate = e => { if (e.candidate) answerCandidates.add(e.candidate.toJSON()); };
-      setStatus('connecting');
-      showOverlay('Connecting…');
-
-      try {
-        const docSnap = await callDoc.get();
-        if (!docSnap.exists) { showToast('Waiting for doctor to start'); hideOverlay(); return; }
-        const callData = docSnap.data();
-        if (!callData.offer) { showToast('Waiting for doctor to start'); hideOverlay(); return; }
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.offer));
-        const answerDescription = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answerDescription);
-        await callDoc.set({ answer: { type: answerDescription.type, sdp: answerDescription.sdp }, answeredAt: Date.now() }, { merge: true });
-      } catch (e) {
-        console.error('Failed to join room', e);
-        showToast('Failed to join room');
-        hideOverlay();
-        return;
-      }
-
+      // Listen for remote ICE from the doctor immediately
       offerCandidates.onSnapshot(snapshot => snapshot.docChanges().forEach(change => {
         if (change.type === "added") {
-          peerConnection.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+          try { peerConnection.addIceCandidate(new RTCIceCandidate(change.doc.data())); } catch(_) {}
         }
       }));
+      setStatus('connecting');
+      showOverlay('Waiting for doctor to start…');
 
-      roomInfo.classList.add("slide-away");
-      participantCount.textContent = '2';
+      // Watch the call doc until an offer appears, then answer
+      let answered = false;
+      const unsub = callDoc.onSnapshot(async (snap) => {
+        const data = snap.exists ? (snap.data() || {}) : null;
+        if (!data || !data.offer) {
+          // still waiting for the doctor to start the room
+          return;
+        }
+        if (answered) return;
+        try {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+          const answerDescription = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answerDescription);
+          await callDoc.set({ answer: { type: answerDescription.type, sdp: answerDescription.sdp }, answeredAt: Date.now() }, { merge: true });
+          roomInfo.classList.add("slide-away");
+          participantCount.textContent = '2';
+          hideOverlay();
+          answered = true;
+          // Keep offerCandidates listener for additional ICE; optionally stop listening to main doc
+          // unsub && unsub();
+        } catch (e) {
+          console.error('Failed to accept offer', e);
+          showToast('Failed to join room');
+        }
+      });
     }
 
     document.getElementById("createBtn").onclick = async () => {
