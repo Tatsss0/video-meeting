@@ -1003,8 +1003,10 @@
         }
 
         function buildJoinUrl(appt) {
-          if (appt.roomId) return `index.html?room=${encodeURIComponent(appt.roomId)}&as=patient`;
-          return `index.html?appt=${encodeURIComponent(appt.id)}&as=patient`;
+          const docUid = appt.doctorId || '';
+          if (docUid) return `vc.php?room=${encodeURIComponent(`doc_${docUid}`)}&as=patient&hostUid=${encodeURIComponent(docUid)}`;
+          if (appt.roomId) return `vc.php?room=${encodeURIComponent(appt.roomId)}&as=patient`;
+          return `vc.php`;
         }
 
         async function renderAppointments() {

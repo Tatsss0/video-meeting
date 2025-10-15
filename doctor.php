@@ -328,9 +328,10 @@
       joinCallBtn.title = 'No upcoming appointment';
       return;
     }
-    // Prefer room link if available; otherwise use appt id so page can wait
-    if (appt.roomId) currentJoinUrl = `index.html?room=${encodeURIComponent(appt.roomId)}&as=patient`;
-    else currentJoinUrl = `index.html?appt=${encodeURIComponent(appt.id)}&as=patient`;
+    // Prefer doctor's stable room derived from doctorId
+    if (appt.doctorId) currentJoinUrl = `vc.php?room=${encodeURIComponent('doc_' + appt.doctorId)}&as=patient&hostUid=${encodeURIComponent(appt.doctorId)}`;
+    else if (appt.roomId) currentJoinUrl = `vc.php?room=${encodeURIComponent(appt.roomId)}&as=patient`;
+    else currentJoinUrl = `vc.php`;
     joinCallBtn.disabled = false;
     joinCallBtn.title = 'Join your next appointment';
   }
