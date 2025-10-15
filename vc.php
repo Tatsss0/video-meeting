@@ -23,6 +23,7 @@
     <button id="micBtn" class="btn" title="Toggle Microphone">🎤</button>
     <button id="camBtn" class="btn" title="Toggle Camera">🎥</button>
     <button id="screenBtn" class="btn" title="Share Screen">🖥️</button>
+    <button id="membersBtn" class="btn" title="Members">👤</button>
 
     <button id="fullscreenBtn" class="btn" title="Fullscreen">⛶</button>
     <button id="leaveBtn" class="btn btn-red" title="Leave">❌</button>
@@ -33,6 +34,15 @@
     <input id="roomIdInput" placeholder="Enter Room ID" />
     <button id="joinBtn" class="btn" title="Join Room">➡️</button>
     <button id="copyBtn" class="btn" style="display:none;" title="Copy Room ID">🔗</button>
+  </div>
+
+  <!-- Members panel -->
+  <div id="membersPanel" class="hidden" style="position:fixed; top:64px; right:16px; width:240px; max-height:50vh; overflow:auto; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:12px; box-shadow:0 6px 24px rgba(0,0,0,0.12); z-index:1000;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <strong>Members</strong>
+      <button id="membersClose" class="btn btn-sm" title="Close">✕</button>
+    </div>
+    <ul id="membersList" style="list-style:none; padding-left:0; margin:0;"></ul>
   </div>
 
   <!-- Overlay for status/loading -->
@@ -47,6 +57,7 @@
   <script>
     // Use existing Firebase app/init from firebase-init.js
     const db = window.db || firebase.firestore();
+    const auth = firebase.auth();
 
     let localStream, remoteStream, peerConnection, screenStream;
     const servers = { iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }] };
@@ -66,7 +77,13 @@
       stream.getTracks().forEach(t => t.stop());
     }
 
+    async function leavePresence() {
+      try { if (presenceDocRef) await presenceDocRef.set({ active:false, leftAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true }); } catch(_) {}
+    }
+
     function cleanup() {
+      // Mark presence left
+      leavePresence();
       if (peerConnection) {
         peerConnection.ontrack = null;
         peerConnection.onicecandidate = null;
@@ -133,6 +150,51 @@
       return peerConnection;
     }
 
+    // Presence and members
+    let currentRoomId = '';
+    let presenceDocRef = null;
+    let membersUnsub = null;
+
+    function getDisplayName(as) {
+      const u = auth.currentUser;
+      return (u && (u.displayName || u.email)) || (as === 'doctor' ? 'Doctor' : 'Patient');
+    }
+
+    async function enterPresence(roomId, role) {
+      currentRoomId = roomId;
+      // Pick stable id for presence
+      let pid = auth.currentUser?.uid || localStorage.getItem('techmed_member_id');
+      if (!pid) { pid = 'anon_' + Math.random().toString(36).slice(2, 10); localStorage.setItem('techmed_member_id', pid); }
+      const name = getDisplayName(role);
+      presenceDocRef = db.collection('calls').doc(roomId).collection('members').doc(pid);
+      await presenceDocRef.set({
+        uid: auth.currentUser?.uid || null,
+        name,
+        role: role || 'guest',
+        active: true,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        joinedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+
+    function listenMembers(roomId) {
+      if (membersUnsub) { try { membersUnsub(); } catch(_) {} membersUnsub = null; }
+      const listEl = document.getElementById('membersList');
+      membersUnsub = db.collection('calls').doc(roomId).collection('members').onSnapshot((snap) => {
+        const members = [];
+        snap.forEach(d => { const m = d.data() || {}; if (m.active !== false) members.push(m); });
+        if (listEl) {
+          listEl.innerHTML = '';
+          members.forEach(m => {
+            const li = document.createElement('li');
+            li.textContent = `${m.name || 'Guest'}${m.role ? ' • ' + m.role : ''}`;
+            listEl.appendChild(li);
+          });
+        }
+        try { participantCount.textContent = String(Math.max(1, members.length)); } catch(_) {}
+      });
+    }
+
     async function createInRoom(roomId) {
       document.getElementById("roomIdInput").value = roomId;
       const callDoc = db.collection("calls").doc(roomId);
@@ -182,6 +244,9 @@
       }));
 
       roomInfo.classList.add("slide-away");
+      // Presence & members
+      await enterPresence(roomId, 'doctor');
+      listenMembers(roomId);
     }
 
     async function joinInRoom(roomId) {
@@ -228,6 +293,9 @@
           showToast('Failed to join room');
         }
       });
+      // Presence & members
+      await enterPresence(roomId, 'patient');
+      listenMembers(roomId);
     }
 
     document.getElementById("createBtn").onclick = async () => {
@@ -387,6 +455,15 @@
     // Enter to join
     document.getElementById('roomIdInput').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') document.getElementById('joinBtn').click();
+    });
+
+    // Members UI toggles
+    document.getElementById('membersBtn').addEventListener('click', ()=>{
+      const p = document.getElementById('membersPanel');
+      p.classList.toggle('hidden');
+    });
+    document.getElementById('membersClose').addEventListener('click', ()=>{
+      document.getElementById('membersPanel').classList.add('hidden');
     });
   </script>
 </body>
