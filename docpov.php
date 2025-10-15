@@ -256,10 +256,9 @@
               const statusLower = (a.status || '').toLowerCase();
               const isDone = statusLower === 'done';
               const isPast = isDone || (when ? when.getTime() < nowMs : false);
-              // Build meeting link for doctors: prefer room, else pass appt id; always include hostUid (doctor uid)
-              const apptLink = a.roomId
-                ? `./videomeet.php?room=${encodeURIComponent(a.roomId)}&as=doctor&hostUid=${encodeURIComponent(uid)}`
-                : `./videomeet.php?appt=${encodeURIComponent(a.docId)}&as=doctor&hostUid=${encodeURIComponent(uid)}`;
+              // Build meeting link for doctors using their Firebase uid as the room (doctor is host)
+              const doctorRoom = `doc_${uid}`;
+              const apptLink = `./vc.php?room=${encodeURIComponent(doctorRoom)}&as=doctor&hostUid=${encodeURIComponent(uid)}`;
 
               const status = (a.status || 'pending').toLowerCase();
               const badgeClass = (status === 'confirmed' || status === 'done') ? 'bg-success'
