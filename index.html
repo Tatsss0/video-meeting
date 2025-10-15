@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TECHMED — Video Visit</title>
+  <meta name="theme-color" content="#2c3e50" />
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <style>
+    html, body { height: 100%; }
+    body { display: flex; flex-direction: column; }
+    #app { flex: 1 1 auto; display: flex; }
+    #left { width: 360px; max-width: 100%; border-right: 1px solid #e5e7eb; padding: 16px; overflow: auto; }
+    #main { flex: 1 1 auto; position: relative; background: #0b141a; }
+    #jitsi { position: absolute; inset: 0; }
+    #wait-overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.7); color: #fff; padding: 24px; text-align: center; z-index: 5; }
+    .small-muted { color: #6b7280; font-size: 12px; }
+    .badge-cap { text-transform: uppercase; letter-spacing: 0.03em; }
+    .monospace { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+
+    /* Embed mode for iframe usage */
+    body.embed header { display: none !important; }
+    body.embed #left { display: none !important; }
+    body.embed #app { display: block; }
+    body.embed #main { position: fixed; inset: 0; }
+  </style>
+</head>
+<body>
+  <header class="navbar navbar-light bg-light border-bottom">
+    <div class="container-fluid">
+      <a class="navbar-brand fw-semibold" href="./docpov.php">TECH<span class="text-primary">MED</span> — Video Visit</a>
+      <div class="d-flex align-items-center gap-2">
+        <button id="copyLinkBtn" class="btn btn-outline-primary btn-sm" disabled>
+          <i class="bi bi-link-45deg"></i> Copy join link
+        </button>
+        <button id="leaveBtn" class="btn btn-outline-secondary btn-sm" disabled>
+          Leave
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div id="app">
+    <aside id="left">
+      <div class="d-flex align-items-center gap-2 mb-2">
+        <div id="roleBadge" class="badge text-bg-secondary badge-cap">user</div>
+        <div id="statusBadge" class="badge text-bg-secondary badge-cap">idle</div>
+      </div>
+
+      <h5 id="apptTitle" class="mb-1">Loading…</h5>
+      <div id="apptSub" class="small-muted mb-3"></div>
+
+      <div class="mb-3">
+        <div class="small-muted">Room ID</div>
+        <div id="roomIdText" class="monospace"></div>
+      </div>
+
+      <div class="mb-3">
+        <div class="small-muted">Starts at</div>
+        <div id="startAtText">—</div>
+      </div>
+
+      <div class="mb-3">
+        <div class="small-muted">Join status</div>
+        <div id="joinStatus">Preparing…</div>
+      </div>
+
+      <div class="alert alert-info py-2 px-3" id="infoBox" style="display:none"></div>
+    </aside>
+
+    <main id="main">
+      <div id="wait-overlay">
+        <div>
+          <div id="waitTitle" class="h4 mb-1">Waiting for your appointment…</div>
+          <div id="waitDetail" class="mb-3">This page will auto-join when it starts.</div>
+          <div id="countdown" class="display-6 fw-bold"></div>
+        </div>
+      </div>
+      <div id="jitsi"></div>
+    </main>
+  </div>
+
+  <!-- Vendor scripts -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" />
+
+  <!-- Firebase Compat SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+  <script src="./firebase-init.js"></script>
+
+  <!-- Jitsi Embed API -->
+  <script src="https://meet.jit.si/external_api.js"></script>
+
+  <script>
+  (function(){
+    const qs = (id) => document.getElementById(id);
+    const dbRef = () => window.db; // from firebase-init.js
+
+    const ui = {
+      roleBadge: qs('roleBadge'),
+      statusBadge: qs('statusBadge'),
+      apptTitle: qs('apptTitle'),
+      apptSub: qs('apptSub'),
+      roomIdText: qs('roomIdText'),
+      startAtText: qs('startAtText'),
+      joinStatus: qs('joinStatus'),
+      waitOverlay: qs('wait-overlay'),
+      waitTitle: qs('waitTitle'),
+      waitDetail: qs('waitDetail'),
+      countdown: qs('countdown'),
+      copyBtn: qs('copyLinkBtn'),
+      leaveBtn: qs('leaveBtn'),
+      infoBox: qs('infoBox'),
+    };
+
+    const state = {
+      authUser: null,
+      isDoctor: false,
+      appointmentId: null,
+      appointment: null,
+      roomId: null,
+      jitsiApi: null,
+      unsubAppt: null,
+      countdownTimer: null,
+    };
+
+    function parseQuery(){
+      const p = new URLSearchParams(window.location.search);
+      return {
+        room: p.get('room') || '',
+        appt: p.get('appt') || '',
+        as: p.get('as') || '',
+        embed: p.get('embed') || '',
+      };
+    }
+
+    function fmt(ts){
+      if (!ts) return '—';
+      const d = ts.toDate ? ts.toDate() : new Date(ts);
+      return d.toLocaleString();
+    }
+
+    function toDateObj(ts){
+      return ts && ts.toDate ? ts.toDate() : (ts ? new Date(ts) : null);
+    }
+
+    function setRoleBadge(){
+      ui.roleBadge.textContent = state.isDoctor ? 'doctor' : 'patient';
+      ui.roleBadge.className = 'badge badge-cap ' + (state.isDoctor ? 'text-bg-primary' : 'text-bg-success');
+    }
+
+    function setStatusBadge(text, type){
+      ui.statusBadge.textContent = text;
+      ui.statusBadge.className = 'badge badge-cap text-bg-' + (type || 'secondary');
+    }
+
+    function setInfo(msg){
+      if (!msg) { ui.infoBox.style.display = 'none'; ui.infoBox.textContent=''; return; }
+      ui.infoBox.style.display = '';
+      ui.infoBox.textContent = msg;
+    }
+
+    function copy(text){
+      try { navigator.clipboard.writeText(text); } catch(_) {}
+    }
+
+    function joinUrl(room){
+      const url = new URL(window.location.href);
+      url.search = '';
+      url.hash = '';
+      url.searchParams.set('room', room);
+      return url.toString();
+    }
+
+    function selectDoctorAppointment(appts){
+      const now = Date.now();
+      const fifteenMin = 15 * 60 * 1000;
+      const fortyFiveMin = 45 * 60 * 1000;
+
+      const upcoming = appts
+        .filter(a => {
+          const s = (a.status || '').toLowerCase();
+          return !(s === 'cancelled' || s === 'rejected' || s === 'done');
+        })
+        .sort((a,b)=> (toDateObj(a.startAt)?.getTime()||0) - (toDateObj(b.startAt)?.getTime()||0));
+
+      // Prefer appointment in a window around now
+      let target = upcoming.find(a => {
+        const t = toDateObj(a.startAt)?.getTime() || 0;
+        return Math.abs(t - now) <= fortyFiveMin;
+      });
+      if (!target) target = upcoming[0];
+      return target || null;
+    }
+
+    async function ensureDoctorRoomForAppointment(appt){
+      if (!appt) return { roomId: `doctor_${state.authUser.uid}` };
+      if (appt.roomId) return { roomId: String(appt.roomId), updated: false };
+      const roomId = `appt_${appt.id || state.appointmentId}_${state.authUser.uid}`;
+      try {
+        await dbRef().collection('appointments').doc(appt.id).set({
+          roomId,
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        return { roomId, updated: true };
+      } catch (e) {
+        console.error('Failed to set roomId', e);
+        return { roomId };
+      }
+    }
+
+    function gatePatientJoin(appt){
+      if (!appt) return { allow: true, reason: 'no_appointment' };
+      const now = Date.now();
+      const start = toDateObj(appt.startAt)?.getTime() || 0;
+      const status = (appt.status || '').toLowerCase();
+      const tenMin = 10 * 60 * 1000;
+
+      if (status === 'cancelled' || status === 'rejected') {
+        return { allow: false, reason: 'cancelled' };
+      }
+      if (status === 'done') {
+        return { allow: true, reason: 'past' };
+      }
+      if (appt.inCall === true) {
+        return { allow: true, reason: 'doctor_in_call' };
+      }
+      if (now + tenMin >= start) {
+        return { allow: true, reason: 'within_window' };
+      }
+      return { allow: false, reason: 'too_early', waitMs: start - now - tenMin };
+    }
+
+    function showWait(ms, title, detail){
+      ui.waitOverlay.style.display = 'flex';
+      ui.waitTitle.textContent = title || 'Please wait…';
+      ui.waitDetail.textContent = detail || '';
+      updateCountdown(ms);
+      if (state.countdownTimer) clearInterval(state.countdownTimer);
+      state.countdownTimer = setInterval(()=> updateCountdown(ms), 1000);
+    }
+
+    function hideWait(){
+      ui.waitOverlay.style.display = 'none';
+      if (state.countdownTimer) { clearInterval(state.countdownTimer); state.countdownTimer = null; }
+    }
+
+    function updateCountdown(targetMs){
+      if (!targetMs) { ui.countdown.textContent = ''; return; }
+      const now = Date.now();
+      const remain = Math.max(0, targetMs - now);
+      const s = Math.floor(remain / 1000);
+      const mm = String(Math.floor(s/60)).padStart(2,'0');
+      const ss = String(s%60).padStart(2,'0');
+      ui.countdown.textContent = `${mm}:${ss}`;
+    }
+
+    function mountJitsi(roomId, displayName, subject){
+      if (!roomId) throw new Error('Missing roomId');
+      state.roomId = roomId;
+      ui.roomIdText.textContent = roomId;
+      ui.copyBtn.disabled = false;
+      ui.copyBtn.onclick = ()=> copy(joinUrl(roomId));
+
+      const domain = 'meet.jit.si';
+      const options = {
+        roomName: roomId,
+        parentNode: document.querySelector('#jitsi'),
+        userInfo: { displayName: displayName || 'Guest' },
+        configOverwrite: { prejoinPageEnabled: true },
+        interfaceConfigOverwrite: { MOBILE_APP_PROMO: false },
+      };
+
+      state.jitsiApi = new JitsiMeetExternalAPI(domain, options);
+      ui.leaveBtn.disabled = false;
+      ui.leaveBtn.onclick = ()=> state.jitsiApi?.executeCommand('hangup');
+
+      state.jitsiApi.addEventListener('videoConferenceJoined', async () => {
+        setStatusBadge('in call', 'success');
+        ui.joinStatus.textContent = 'Connected';
+        try {
+          if (state.appointmentId) {
+            await dbRef().collection('appointments').doc(state.appointmentId).set({
+              inCall: true,
+              callStartedAt: firebase.firestore.FieldValue.serverTimestamp(),
+              participants: { [state.authUser.uid]: true },
+              updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            }, { merge: true });
+          }
+        } catch (e) { console.warn('join update failed', e); }
+      });
+
+      state.jitsiApi.addEventListener('readyToClose', async () => {
+        setStatusBadge('ended', 'secondary');
+        ui.joinStatus.textContent = 'Call ended';
+        try {
+          if (state.appointmentId) {
+            await dbRef().collection('appointments').doc(state.appointmentId).set({
+              inCall: false,
+              callEndedAt: firebase.firestore.FieldValue.serverTimestamp(),
+              updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            }, { merge: true });
+          }
+        } catch (e) { console.warn('end update failed', e); }
+      });
+    }
+
+    function onApptSnapshot(doc){
+      if (!doc || !doc.exists) return;
+      const data = doc.data();
+      state.appointment = { id: doc.id, ...data };
+
+      const patientName = data.patientName || 'Patient';
+      const doctorName = data.doctorName || 'Doctor';
+      const displayTitle = state.isDoctor ? `${patientName}` : `Dr. ${doctorName}`;
+      const subject = data.reason ? `${displayTitle} • ${data.reason}` : displayTitle;
+
+      ui.apptTitle.textContent = displayTitle;
+      ui.apptSub.textContent = subject;
+      ui.startAtText.textContent = fmt(data.startAt);
+
+      // For patient: update waiting gate as appointment changes
+      if (!state.isDoctor) {
+        const gate = gatePatientJoin(state.appointment);
+        if (gate.allow) {
+          hideWait();
+          if (!state.jitsiApi && state.roomId) {
+            mountJitsi(state.roomId, state.authUser.displayName || 'Patient', subject);
+          }
+        } else {
+          const start = toDateObj(state.appointment.startAt)?.getTime() || 0;
+          showWait(Date.now() + (gate.waitMs || Math.max(0, start - Date.now())) , 'Waiting to join', 'You can join 10 minutes before start.');
+        }
+      }
+    }
+
+    async function doctorFlow(query){
+      setRoleBadge();
+      setStatusBadge('doctor', 'primary');
+      const uid = state.authUser.uid;
+
+      // Preferred: explicit appointment via query
+      let targetId = query.appt || '';
+      let targetAppt = null;
+
+      if (targetId) {
+        const snap = await dbRef().collection('appointments').doc(targetId).get().catch(()=>null);
+        if (snap && snap.exists && snap.data().doctorId === uid) {
+          targetAppt = { id: snap.id, ...snap.data() };
+        }
+      }
+
+      if (!targetAppt) {
+        // Fallback: pick current/next appointment
+        const snap = await dbRef().collection('appointments').where('doctorId', '==', uid).limit(20).get().catch(()=>null);
+        const items = [];
+        if (snap) snap.forEach(d => items.push({ id: d.id, ...d.data() }));
+        targetAppt = selectDoctorAppointment(items);
+      }
+
+      state.appointmentId = targetAppt ? targetAppt.id : null;
+      if (state.appointmentId) {
+        if (state.unsubAppt) { try { state.unsubAppt(); } catch(_) {} }
+        state.unsubAppt = dbRef().collection('appointments').doc(state.appointmentId).onSnapshot(onApptSnapshot);
+      } else {
+        ui.apptTitle.textContent = 'No upcoming appointment';
+        ui.apptSub.textContent = 'Starting a generic doctor room';
+      }
+
+      // Ensure room
+      const ensured = await ensureDoctorRoomForAppointment(targetAppt);
+      const roomId = ensured.roomId;
+      state.roomId = roomId;
+      ui.roomIdText.textContent = roomId;
+      setInfo('Share this link with the patient: ' + joinUrl(roomId));
+
+      // If the URL did not already include room param, update it for shareability
+      if (!query.room) {
+        const url = new URL(window.location.href);
+        if (state.appointmentId) url.searchParams.set('appt', state.appointmentId);
+        url.searchParams.set('room', roomId);
+        window.history.replaceState({}, '', url.toString());
+      }
+
+      // Join immediately as doctor
+      const profileSnap = await dbRef().collection('doctors').doc(uid).get().catch(()=>null);
+      const displayName = profileSnap && profileSnap.exists ? (profileSnap.data().fullName ? `Dr. ${profileSnap.data().fullName}` : 'Doctor') : 'Doctor';
+
+      const subject = targetAppt && targetAppt.reason ? `${displayName} • ${targetAppt.reason}` : displayName;
+      mountJitsi(roomId, displayName, subject);
+    }
+
+    async function patientFlow(query){
+      setRoleBadge();
+      setStatusBadge('patient', 'success');
+
+      // Case 1: Direct room join
+      if (query.room) {
+        // Find appointment by roomId to show details
+        const apptSnap = await dbRef().collection('appointments').where('roomId', '==', query.room).limit(5).get().catch(()=>null);
+        let target = null;
+        if (apptSnap && !apptSnap.empty) {
+          const items = [];
+          apptSnap.forEach(d => items.push({ id: d.id, ...d.data() }));
+          items.sort((a,b)=> (toDateObj(a.startAt)?.getTime()||0) - (toDateObj(b.startAt)?.getTime()||0));
+          const withMe = items.find(a => a.patientId === state.authUser.uid) || items[0];
+          target = withMe;
+        }
+
+        state.appointmentId = target ? target.id : null;
+        if (state.appointmentId) {
+          if (state.unsubAppt) { try { state.unsubAppt(); } catch(_) {} }
+          state.unsubAppt = dbRef().collection('appointments').doc(state.appointmentId).onSnapshot(onApptSnapshot);
+        }
+
+        state.roomId = query.room;
+        ui.roomIdText.textContent = state.roomId;
+
+        const gate = gatePatientJoin(target);
+        if (!gate.allow) {
+          const start = toDateObj(target?.startAt)?.getTime() || 0;
+          const waitUntil = Date.now() + (gate.waitMs || Math.max(0, start - Date.now()));
+          showWait(waitUntil, 'Waiting to join', 'You can join 10 minutes before start.');
+          const unsub = target ? dbRef().collection('appointments').doc(target.id).onSnapshot(d => {
+            const data = d.data();
+            const g = gatePatientJoin({ ...data, id: d.id });
+            if (g.allow && !state.jitsiApi) {
+              hideWait();
+              const displayName = state.authUser.displayName || 'Patient';
+              const subject = data.reason ? `Appointment • ${data.reason}` : 'Appointment';
+              mountJitsi(state.roomId, displayName, subject);
+              unsub && unsub();
+            }
+          }) : null;
+        } else {
+          const displayName = state.authUser.displayName || 'Patient';
+          const subject = target && target.reason ? `Appointment • ${target.reason}` : 'Appointment';
+          mountJitsi(state.roomId, displayName, subject);
+        }
+        return;
+      }
+
+      // Case 2: Appointment-driven join (wait for roomId)
+      if (query.appt) {
+        const ref = dbRef().collection('appointments').doc(query.appt);
+        const snap = await ref.get().catch(()=>null);
+        if (!snap || !snap.exists) {
+          ui.apptTitle.textContent = 'Appointment not found';
+          ui.apptSub.textContent = '';
+          setInfo('Please check your link or open from your dashboard.');
+          return;
+        }
+
+        state.appointmentId = snap.id;
+        if (state.unsubAppt) { try { state.unsubAppt(); } catch(_) {} }
+        state.unsubAppt = ref.onSnapshot(doc => {
+          onApptSnapshot(doc);
+          const data = doc.data() || {};
+          if (data.roomId && !state.roomId) {
+            state.roomId = String(data.roomId);
+            ui.roomIdText.textContent = state.roomId;
+          }
+
+          if (state.roomId && !state.jitsiApi) {
+            const gate = gatePatientJoin({ ...data, id: doc.id });
+            if (gate.allow) {
+              hideWait();
+              const displayName = state.authUser.displayName || 'Patient';
+              const subject = data.reason ? `Appointment • ${data.reason}` : 'Appointment';
+              mountJitsi(state.roomId, displayName, subject);
+            } else {
+              const start = toDateObj(data.startAt)?.getTime() || 0;
+              const waitUntil = Date.now() + (gate.waitMs || Math.max(0, start - Date.now()));
+              showWait(waitUntil, 'Waiting to join', 'You can join 10 minutes before start.');
+            }
+          } else if (!state.roomId) {
+            showWait(Date.now() + 60_000, 'Waiting for doctor to open the room', 'This will connect automatically when the room is ready.');
+          }
+        });
+        return;
+      }
+
+      // No parameters: show guidance
+      ui.apptTitle.textContent = 'Waiting for your doctor to open the room';
+      ui.apptSub.textContent = 'Open this from your appointment or notification link.';
+      setInfo('No appointment or room specified.');
+    }
+
+    async function detectRole(user){
+      // Decide role by users/{uid}.role or doctors/{uid} existence
+      try {
+        const [u, d] = await Promise.all([
+          dbRef().collection('users').doc(user.uid).get(),
+          dbRef().collection('doctors').doc(user.uid).get(),
+        ]);
+        const role = u.exists ? (u.data().role || '') : '';
+        const isDoctor = role === 'doctor' || d.exists;
+        state.isDoctor = isDoctor;
+      } catch (_) {
+        state.isDoctor = false;
+      }
+      setRoleBadge();
+    }
+
+    function wireAuth(){
+      firebase.auth().onAuthStateChanged(async (user) => {
+        if (!user) {
+          // Allow unauthenticated join for testing, but show info
+          state.authUser = { uid: 'anon', displayName: 'Guest' };
+          setInfo('You are not signed in. Some features may be limited.');
+        } else {
+          state.authUser = user;
+          setInfo('');
+        }
+
+        const query = parseQuery();
+        if (query.embed === '1' || query.embed === 'true') {
+          document.body.classList.add('embed');
+        }
+        await detectRole(state.authUser);
+
+        // If URL forces role (debug), honor it
+        if (query.as === 'doctor') state.isDoctor = true;
+        if (query.as === 'patient') state.isDoctor = false;
+        setRoleBadge();
+
+        try {
+          if (state.isDoctor) await doctorFlow(query); else await patientFlow(query);
+        } catch (e) {
+          console.error(e);
+          setStatusBadge('error', 'danger');
+          ui.joinStatus.textContent = e?.message || 'Failed to start';
+        }
+
+        // Notify parent window about lifecycle when embedded
+        try {
+          const post = (type, payload={}) => {
+            if (window.parent && window.parent !== window) {
+              window.parent.postMessage({ source: 'techmed-video', type, payload }, '*');
+            }
+          };
+          post('ready', { room: state.roomId, appt: state.appointmentId });
+          window.addEventListener('message', (ev) => {
+            if (!ev?.data || ev.data.source === 'techmed-video') return;
+            if (ev.data.type === 'hangup' && state.jitsiApi) {
+              state.jitsiApi.executeCommand('hangup');
+            }
+          });
+        } catch (_) {}
+      });
+    }
+
+    wireAuth();
+  })();
+  </script>
+</body>
+</html>
