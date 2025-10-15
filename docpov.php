@@ -256,7 +256,10 @@
               const statusLower = (a.status || '').toLowerCase();
               const isDone = statusLower === 'done';
               const isPast = isDone || (when ? when.getTime() < nowMs : false);
-              const roomLink = a.roomId ? `./index.html?room=${encodeURIComponent(a.roomId)}` : './index.html';
+              // Build meeting link for doctors: prefer room, else pass appt id
+              const apptLink = a.roomId
+                ? `./videomeet.php?room=${encodeURIComponent(a.roomId)}&as=doctor`
+                : `./videomeet.php?appt=${encodeURIComponent(a.docId)}&as=doctor`;
 
               const status = (a.status || 'pending').toLowerCase();
               const badgeClass = (status === 'confirmed' || status === 'done') ? 'bg-success'
@@ -265,8 +268,8 @@
                                 : 'bg-secondary';
 
               const actions = isPast
-                ? `<a href="${roomLink}" class="btn btn-sm btn-primary">${a.roomId ? 'Join call' : 'Open meeting'}</a>`
-                : `<a href="${roomLink}" class="btn btn-sm btn-primary">${a.roomId ? 'Join call' : 'Open meeting'}</a>
+                ? `<a href="${apptLink}" class="btn btn-sm btn-primary">${a.roomId ? 'Join call' : 'Open meeting'}</a>`
+                : `<a href="${apptLink}" class="btn btn-sm btn-primary">${a.roomId ? 'Join call' : 'Open meeting'}</a>
                    <button class="btn btn-sm btn-outline-success mark-done-btn" data-id="${a.docId}" ${status === 'done' ? 'disabled' : ''}>
                      <i class="bi bi-check-lg"></i> Done
                    </button>`;
