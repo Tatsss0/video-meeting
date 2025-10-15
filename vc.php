@@ -5,7 +5,9 @@
   <title>TechMed Video Consultation</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+  <script src="./firebase-init.js"></script>
   <link rel="stylesheet" href="vc.css">
 </head>
 <body>
@@ -43,17 +45,8 @@
   <div id="toast" aria-live="polite"></div>
 
   <script>
-    // Replace with your real Firebase config or include firebase-init.js instead
-    const firebaseConfig = {
-      apiKey: "YOUR_FIREBASE_API_KEY",
-      authDomain: "YOUR_FIREBASE_PROJECT.firebaseapp.com",
-      projectId: "YOUR_FIREBASE_PROJECT",
-      storageBucket: "YOUR_FIREBASE_PROJECT.appspot.com",
-      messagingSenderId: "XXXXXXX",
-      appId: "XXXXXXXXXX"
-    };
-    if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
-    const db = firebase.firestore();
+    // Use existing Firebase app/init from firebase-init.js
+    const db = window.db || firebase.firestore();
 
     let localStream, remoteStream, peerConnection, screenStream;
     const servers = { iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }] };
@@ -163,9 +156,16 @@
       setStatus('connecting');
       showOverlay('Waiting for someone to join…');
 
-      const offerDescription = await peerConnection.createOffer();
-      await peerConnection.setLocalDescription(offerDescription);
-      await callDoc.set({ offer: { type: offerDescription.type, sdp: offerDescription.sdp }, createdAt: Date.now() }, { merge: true });
+      try {
+        const offerDescription = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offerDescription);
+        await callDoc.set({ offer: { type: offerDescription.type, sdp: offerDescription.sdp }, createdAt: Date.now() }, { merge: true });
+      } catch (e) {
+        console.error('Failed to create offer', e);
+        showToast('Failed to start room');
+        hideOverlay();
+        return;
+      }
 
       callDoc.onSnapshot(snapshot => {
         const data = snapshot.data();
@@ -196,14 +196,21 @@
       setStatus('connecting');
       showOverlay('Connecting…');
 
-      const docSnap = await callDoc.get();
-      if (!docSnap.exists) { showToast('Waiting for doctor to start'); hideOverlay(); return; }
-      const callData = docSnap.data();
-      if (!callData.offer) { showToast('Waiting for doctor to start'); hideOverlay(); return; }
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.offer));
-      const answerDescription = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answerDescription);
-      await callDoc.set({ answer: { type: answerDescription.type, sdp: answerDescription.sdp }, answeredAt: Date.now() }, { merge: true });
+      try {
+        const docSnap = await callDoc.get();
+        if (!docSnap.exists) { showToast('Waiting for doctor to start'); hideOverlay(); return; }
+        const callData = docSnap.data();
+        if (!callData.offer) { showToast('Waiting for doctor to start'); hideOverlay(); return; }
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.offer));
+        const answerDescription = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answerDescription);
+        await callDoc.set({ answer: { type: answerDescription.type, sdp: answerDescription.sdp }, answeredAt: Date.now() }, { merge: true });
+      } catch (e) {
+        console.error('Failed to join room', e);
+        showToast('Failed to join room');
+        hideOverlay();
+        return;
+      }
 
       offerCandidates.onSnapshot(snapshot => snapshot.docChanges().forEach(change => {
         if (change.type === "added") {
@@ -340,6 +347,10 @@
 
     // Auto initialize media, then auto create/join depending on role
     (async () => {
+      // Ensure auth state is loaded (if rules require auth)
+      await new Promise(resolve => {
+        try { firebase.auth().onAuthStateChanged(() => resolve()); } catch (_) { resolve(); }
+      });
       try {
         showOverlay('Setting up your camera…');
         await ensureLocalStreams();
