@@ -12,7 +12,7 @@
 </head>
 <body>
   <header>TechMed Video Consultation</header>
-  <div id="utility">👥 Participants: <span id="participantCount">1</span> • <span id="connStatus" class="status-dot" title="Not connected"></span></div>
+  <div id="utility">👥 Participants: <span id="participantCount">1</span> • <span id="connStatus" class="status-dot" title="Not connected"></span> <button id="membersBtn" class="btn btn-sm" title="View members">Members</button></div>
 
   <div id="video-area">
     <video id="remoteVideo" autoplay playsinline></video>
@@ -23,7 +23,6 @@
     <button id="micBtn" class="btn" title="Toggle Microphone">🎤</button>
     <button id="camBtn" class="btn" title="Toggle Camera">🎥</button>
     <button id="screenBtn" class="btn" title="Share Screen">🖥️</button>
-    <button id="membersBtn" class="btn" title="Members">👤</button>
 
     <button id="fullscreenBtn" class="btn" title="Fullscreen">⛶</button>
     <button id="leaveBtn" class="btn btn-red" title="Leave">❌</button>
