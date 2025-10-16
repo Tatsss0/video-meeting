@@ -87,6 +87,9 @@
     let selfDisplayName = '';
     let localPhotoURL = '';
     let remotePhotoURL = '';
+    // Name overrides from URL or localStorage (populated after parsing params)
+    let patientNameFromParams = '';
+    let doctorNameFromParams = '';
 
     function setLocalLabelName(name) {
       selfDisplayName = name || selfDisplayName || 'You';
@@ -254,7 +257,70 @@
 
     function getDisplayName(as) {
       const u = auth.currentUser;
-      return (u && (u.displayName || u.email)) || (as === 'doctor' ? 'Doctor' : 'Patient');
+      const roleDefault = as === 'doctor' ? 'Doctor' : 'Patient';
+      const authName = (u && (u.displayName || (u.email ? u.email.split('@')[0] : ''))) || '';
+      const paramName = as === 'doctor' ? (doctorNameFromParams || '') : (patientNameFromParams || '');
+      const storedName = as === 'doctor'
+        ? (localStorage.getItem('techmed_doctor_name') || '')
+        : (localStorage.getItem('techmed_patient_name') || localStorage.getItem('techmed_display_name') || '');
+      return authName || paramName || storedName || roleDefault;
+    }
+
+    function preferName() {
+      for (let i = 0; i < arguments.length; i++) {
+        const v = (arguments[i] || '').toString().trim();
+        if (v) return v;
+      }
+      return '';
+    }
+
+    async function fetchProfileName(uid) {
+      if (!uid) return '';
+      try {
+        const uDoc = await db.collection('users').doc(uid).get();
+        if (uDoc.exists) {
+          const d = uDoc.data() || {};
+          const name = preferName(d.displayName, d.fullName, [d.firstName, d.lastName].filter(Boolean).join(' '), d.name);
+          if (name) return name;
+        }
+      } catch (_) {}
+      try {
+        const pDoc = await db.collection('patients').doc(uid).get();
+        if (pDoc.exists) {
+          const d = pDoc.data() || {};
+          const name = preferName(d.displayName, d.fullName, [d.firstName, d.lastName].filter(Boolean).join(' '), d.name);
+          if (name) return name;
+        }
+      } catch (_) {}
+      return '';
+    }
+
+    function isGenericRoleName(name) {
+      return /^(patient|doctor|guest)$/i.test((name || '').trim());
+    }
+
+    async function improveLocalNameIfPossible(role) {
+      try {
+        const uid = auth.currentUser?.uid;
+        if (!uid) return;
+        const best = await fetchProfileName(uid);
+        if (best && (isGenericRoleName(selfDisplayName) || !selfDisplayName)) {
+          setLocalLabelName(best);
+          if (presenceDocRef) {
+            try { await presenceDocRef.set({ name: best }, { merge: true }); } catch(_) {}
+          }
+        }
+      } catch (_) {}
+    }
+
+    async function maybeResolveRemoteName(remoteMember) {
+      try {
+        const current = (remoteMember && remoteMember.name) || '';
+        const uid = (remoteMember && (remoteMember.uid || remoteMember._id)) || '';
+        if (!uid || !isGenericRoleName(current)) return;
+        const best = await fetchProfileName(uid);
+        if (best) setRemoteLabelName(best);
+      } catch (_) {}
     }
 
     async function enterPresence(roomId, role) {
@@ -280,6 +346,8 @@
       setAvatarSrc(localAvatarEl, name, localPhotoURL);
       updateLocalAvatarVisibility();
       updateLabelsPosition();
+      // Try to refine the name from profile if only a generic fallback is set
+      improveLocalNameIfPossible(role);
     }
 
     function listenMembers(roomId) {
@@ -300,6 +368,8 @@
         const remote = members.find(m => m._id !== selfMemberId);
         if (remote) {
           setRemoteLabelName(remote.name || (remote.role === 'doctor' ? 'Doctor' : 'Patient'));
+          // Attempt to improve remote name if only a generic label is present
+          maybeResolveRemoteName(remote);
           remotePhotoURL = remote.photoURL || remote.photo || '';
           setAvatarSrc(remoteAvatarEl, remote.name, remotePhotoURL);
           updateRemoteAvatarVisibility();
@@ -548,6 +618,11 @@
     // Parse URL params and bind to doctor uid based room
     const params = new URLSearchParams(location.search);
     const as = (params.get('as') || '').toLowerCase();
+    // Optional names from params
+    patientNameFromParams = (params.get('patientName') || params.get('pn') || '').trim();
+    doctorNameFromParams = (params.get('doctorName') || params.get('dn') || '').trim();
+    if (patientNameFromParams) try { localStorage.setItem('techmed_patient_name', patientNameFromParams); } catch(_) {}
+    if (doctorNameFromParams) try { localStorage.setItem('techmed_doctor_name', doctorNameFromParams); } catch(_) {}
     const hostUid = params.get('hostUid') || '';
     let roomFromParam = (params.get('room') || '').trim();
     // If no room provided but hostUid exists, derive doctor room id
