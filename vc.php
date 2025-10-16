@@ -17,8 +17,6 @@
   <div id="video-area">
     <video id="remoteVideo" autoplay playsinline></video>
     <video id="localVideo" autoplay playsinline muted></video>
-    <img id="remoteAvatar" class="video-avatar" alt="Remote avatar" />
-    <img id="localAvatar" class="video-avatar" alt="Your avatar" />
     <!-- Name labels over videos -->
     <div id="remoteLabel" class="video-label" aria-hidden="true">Waiting for participant…</div>
     <div id="localLabel" class="video-label" aria-hidden="true">You</div>
@@ -81,13 +79,9 @@
     const videoArea = document.getElementById('video-area');
     const localLabelEl = document.getElementById('localLabel');
     const remoteLabelEl = document.getElementById('remoteLabel');
-    const localAvatarEl = document.getElementById('localAvatar');
-    const remoteAvatarEl = document.getElementById('remoteAvatar');
     let selfMemberId = '';
     let selfDisplayName = '';
-    let localPhotoURL = '';
-    let remotePhotoURL = '';
-    // Name overrides from URL or localStorage (populated after parsing params)
+    // Optional name overrides from URL (will be set after params parse)
     let patientNameFromParams = '';
     let doctorNameFromParams = '';
 
@@ -114,46 +108,39 @@
       updateLabelFor(localVideo, localLabelEl);
     }
 
-    function setAvatarSrc(imgEl, name, url) {
-      if (!imgEl) return;
-      if (url) { imgEl.src = url; return; }
-      const initial = (name || 'User').trim().charAt(0).toUpperCase() || 'U';
-      const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='128' height='128'><rect width='100%' height='100%' fill='#2d2f31'/><text x='50%' y='54%' dominant-baseline='middle' text-anchor='middle' font-family='Arial, sans-serif' font-size='64' fill='#ffffff'>${initial}</text></svg>`;
-      imgEl.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+    function preferName() {
+      for (let i = 0; i < arguments.length; i++) {
+        const v = (arguments[i] || '').toString().trim();
+        if (v) return v;
+      }
+      return '';
     }
-    function positionAvatarFor(videoEl, avatarEl) {
-      if (!videoEl || !avatarEl || !videoArea) return;
-      const areaRect = videoArea.getBoundingClientRect();
-      const rect = videoEl.getBoundingClientRect();
-      if (!rect.width || !rect.height) { avatarEl.style.opacity = '0'; return; }
-      const w = avatarEl.offsetWidth || 96;
-      const h = avatarEl.offsetHeight || 96;
-      const left = Math.round(rect.left - areaRect.left + (rect.width - w) / 2);
-      const top = Math.round(rect.top - areaRect.top + (rect.height - h) / 2);
-      avatarEl.style.left = left + 'px';
-      avatarEl.style.top = top + 'px';
-      avatarEl.style.opacity = '1';
-    }
-    function updateAvatarsPosition() {
-      positionAvatarFor(remoteVideo, remoteAvatarEl);
-      positionAvatarFor(localVideo, localAvatarEl);
-    }
-    function updateLocalAvatarVisibility() {
+
+    async function fetchProfileName(uid) {
+      if (!uid) return '';
+      // Try users collection
       try {
-        const track = localStream && localStream.getVideoTracks()[0];
-        const show = !track || !track.enabled;
-        localAvatarEl.style.display = show ? 'block' : 'none';
-        if (show) updateAvatarsPosition();
+        const uDoc = await db.collection('users').doc(uid).get();
+        if (uDoc.exists) {
+          const d = uDoc.data() || {};
+          const n = preferName(d.displayName, d.fullName, [d.firstName, d.lastName].filter(Boolean).join(' '), d.name);
+          if (n) return n;
+        }
       } catch (_) {}
-    }
-    function updateRemoteAvatarVisibility() {
+      // Try patients collection
       try {
-        const track = remoteStream && remoteStream.getVideoTracks()[0];
-        const hasVideo = !!track && track.readyState === 'live' && !track.muted && (remoteVideo.videoWidth || 0) > 0;
-        const show = !hasVideo;
-        remoteAvatarEl.style.display = show ? 'block' : 'none';
-        if (show) updateAvatarsPosition();
+        const pDoc = await db.collection('patients').doc(uid).get();
+        if (pDoc.exists) {
+          const d = pDoc.data() || {};
+          const n = preferName(d.displayName, d.fullName, [d.firstName, d.lastName].filter(Boolean).join(' '), d.name);
+          if (n) return n;
+        }
       } catch (_) {}
+      return '';
+    }
+
+    function isGenericRoleName(name) {
+      return /^(patient|doctor|guest)$/i.test((name || '').trim());
     }
 
     function stopStream(stream) {
@@ -194,7 +181,7 @@
         remoteVideo.srcObject = remoteStream;
       }
       // position labels after streams are bound
-      setTimeout(() => { updateLabelsPosition(); updateAvatarsPosition(); updateLocalAvatarVisibility(); updateRemoteAvatarVisibility(); }, 0);
+      setTimeout(updateLabelsPosition, 0);
     }
 
     function showToast(message) {
@@ -218,6 +205,14 @@
       else connStatus.classList.add('status-disconnected');
     }
 
+    function getDisplayName(as) {
+      const u = auth.currentUser;
+      const roleDefault = as === 'doctor' ? 'Doctor' : 'Patient';
+      const authName = (u && (u.displayName || (u.email ? u.email.split('@')[0] : ''))) || '';
+      const paramName = as === 'doctor' ? (doctorNameFromParams || '') : (patientNameFromParams || '');
+      return authName || paramName || roleDefault;
+    }
+
     async function createPeer() {
       peerConnection = new RTCPeerConnection(servers);
       localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
@@ -226,15 +221,6 @@
         hideOverlay();
         setStatus('connected');
         updateLabelsPosition();
-        updateRemoteAvatarVisibility();
-        updateAvatarsPosition();
-        try {
-          e.streams[0].getVideoTracks().forEach(t => {
-            t.addEventListener('mute', updateRemoteAvatarVisibility);
-            t.addEventListener('unmute', updateRemoteAvatarVisibility);
-            t.addEventListener('ended', updateRemoteAvatarVisibility);
-          });
-        } catch (_) {}
       };
       peerConnection.onconnectionstatechange = () => {
         if (peerConnection.connectionState === 'connected') participantCount.textContent = '2';
@@ -244,8 +230,6 @@
           peerConnection.connectionState === 'connecting' ? 'connecting' : 'disconnected'
         );
         updateLabelsPosition();
-        updateRemoteAvatarVisibility();
-        updateAvatarsPosition();
       };
       return peerConnection;
     }
@@ -254,74 +238,6 @@
     let currentRoomId = '';
     let presenceDocRef = null;
     let membersUnsub = null;
-
-    function getDisplayName(as) {
-      const u = auth.currentUser;
-      const roleDefault = as === 'doctor' ? 'Doctor' : 'Patient';
-      const authName = (u && (u.displayName || (u.email ? u.email.split('@')[0] : ''))) || '';
-      const paramName = as === 'doctor' ? (doctorNameFromParams || '') : (patientNameFromParams || '');
-      const storedName = as === 'doctor'
-        ? (localStorage.getItem('techmed_doctor_name') || '')
-        : (localStorage.getItem('techmed_patient_name') || localStorage.getItem('techmed_display_name') || '');
-      return authName || paramName || storedName || roleDefault;
-    }
-
-    function preferName() {
-      for (let i = 0; i < arguments.length; i++) {
-        const v = (arguments[i] || '').toString().trim();
-        if (v) return v;
-      }
-      return '';
-    }
-
-    async function fetchProfileName(uid) {
-      if (!uid) return '';
-      try {
-        const uDoc = await db.collection('users').doc(uid).get();
-        if (uDoc.exists) {
-          const d = uDoc.data() || {};
-          const name = preferName(d.displayName, d.fullName, [d.firstName, d.lastName].filter(Boolean).join(' '), d.name);
-          if (name) return name;
-        }
-      } catch (_) {}
-      try {
-        const pDoc = await db.collection('patients').doc(uid).get();
-        if (pDoc.exists) {
-          const d = pDoc.data() || {};
-          const name = preferName(d.displayName, d.fullName, [d.firstName, d.lastName].filter(Boolean).join(' '), d.name);
-          if (name) return name;
-        }
-      } catch (_) {}
-      return '';
-    }
-
-    function isGenericRoleName(name) {
-      return /^(patient|doctor|guest)$/i.test((name || '').trim());
-    }
-
-    async function improveLocalNameIfPossible(role) {
-      try {
-        const uid = auth.currentUser?.uid;
-        if (!uid) return;
-        const best = await fetchProfileName(uid);
-        if (best && (isGenericRoleName(selfDisplayName) || !selfDisplayName)) {
-          setLocalLabelName(best);
-          if (presenceDocRef) {
-            try { await presenceDocRef.set({ name: best }, { merge: true }); } catch(_) {}
-          }
-        }
-      } catch (_) {}
-    }
-
-    async function maybeResolveRemoteName(remoteMember) {
-      try {
-        const current = (remoteMember && remoteMember.name) || '';
-        const uid = (remoteMember && (remoteMember.uid || remoteMember._id)) || '';
-        if (!uid || !isGenericRoleName(current)) return;
-        const best = await fetchProfileName(uid);
-        if (best) setRemoteLabelName(best);
-      } catch (_) {}
-    }
 
     async function enterPresence(roomId, role) {
       currentRoomId = roomId;
@@ -334,7 +250,6 @@
         uid: auth.currentUser?.uid || null,
         name,
         role: role || 'guest',
-        photoURL: auth.currentUser?.photoURL || null,
         active: true,
         updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
         joinedAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -342,12 +257,19 @@
       // Update local label details
       selfMemberId = pid;
       setLocalLabelName(name);
-      localPhotoURL = auth.currentUser?.photoURL || '';
-      setAvatarSrc(localAvatarEl, name, localPhotoURL);
-      updateLocalAvatarVisibility();
       updateLabelsPosition();
-      // Try to refine the name from profile if only a generic fallback is set
-      improveLocalNameIfPossible(role);
+      // Try to refine name from profile if generic
+      (async () => {
+        try {
+          const uid = auth.currentUser?.uid;
+          if (!uid) return;
+          const best = await fetchProfileName(uid);
+          if (best && (isGenericRoleName(selfDisplayName) || !selfDisplayName)) {
+            setLocalLabelName(best);
+            try { await presenceDocRef.set({ name: best }, { merge: true }); } catch (_) {}
+          }
+        } catch (_) {}
+      })();
     }
 
     function listenMembers(roomId) {
@@ -367,19 +289,24 @@
         // Determine remote participant's name (first active member that's not me)
         const remote = members.find(m => m._id !== selfMemberId);
         if (remote) {
-          setRemoteLabelName(remote.name || (remote.role === 'doctor' ? 'Doctor' : 'Patient'));
-          // Attempt to improve remote name if only a generic label is present
-          maybeResolveRemoteName(remote);
-          remotePhotoURL = remote.photoURL || remote.photo || '';
-          setAvatarSrc(remoteAvatarEl, remote.name, remotePhotoURL);
-          updateRemoteAvatarVisibility();
+          // Prefer provided param for patient/doctor, else presence name
+          const roleDefault = remote.role === 'doctor' ? 'Doctor' : 'Patient';
+          const paramName = remote.role === 'doctor' ? (doctorNameFromParams || '') : (patientNameFromParams || '');
+          const chosen = preferName(paramName, remote.name, roleDefault);
+          setRemoteLabelName(chosen);
+          // Attempt to resolve better remote name from profile if generic
+          (async () => { try {
+            const isGeneric = isGenericRoleName(chosen);
+            const uid = remote.uid || remote._id || '';
+            if (isGeneric && uid) {
+              const best = await fetchProfileName(uid);
+              if (best) setRemoteLabelName(best);
+            }
+          } catch(_) {} })();
         } else {
           setRemoteLabelName('Waiting for participant…');
-          remoteAvatarEl.style.display = 'none';
         }
         try { participantCount.textContent = String(Math.max(1, members.length)); } catch(_) {}
-        updateLabelsPosition();
-        updateAvatarsPosition();
       });
     }
 
@@ -423,8 +350,6 @@
           peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
           participantCount.textContent = '2';
           updateLabelsPosition();
-          updateRemoteAvatarVisibility();
-          updateAvatarsPosition();
         }
       });
 
@@ -477,8 +402,6 @@
           participantCount.textContent = '2';
           hideOverlay();
           updateLabelsPosition();
-          updateRemoteAvatarVisibility();
-          updateAvatarsPosition();
           answered = true;
           // Keep offerCandidates listener for additional ICE; optionally stop listening to main doc
           // unsub && unsub();
@@ -527,8 +450,6 @@
         btn.classList.toggle('btn-off', !track.enabled);
         btn.setAttribute('aria-pressed', String(!track.enabled));
         showToast(track.enabled ? 'Camera on' : 'Camera off');
-        updateLocalAvatarVisibility();
-        updateAvatarsPosition();
       }
     };
     document.getElementById("leaveBtn").onclick = () => { cleanup(); location.reload(); };
@@ -588,8 +509,8 @@
     document.addEventListener("touchend", () => { isDragging = false; updateLabelsPosition(); });
 
     // Reposition labels when metadata (dimensions) load
-    localVideo.addEventListener('loadedmetadata', () => { updateLabelsPosition(); updateAvatarsPosition(); });
-    remoteVideo.addEventListener('loadedmetadata', () => { updateLabelsPosition(); updateAvatarsPosition(); });
+    localVideo.addEventListener('loadedmetadata', updateLabelsPosition);
+    remoteVideo.addEventListener('loadedmetadata', updateLabelsPosition);
 
     // Auto-hide controls & adjust remote video
     let hideControlsTimeout;
@@ -607,7 +528,7 @@
         updateLabelsPosition();
       }, 3000);
       // recalc immediately when controls become visible
-      requestAnimationFrame(() => { updateLabelsPosition(); updateAvatarsPosition(); });
+      requestAnimationFrame(updateLabelsPosition);
     }
     ["mousemove", "touchstart"].forEach(evt => { document.addEventListener(evt, showControls); });
     showControls();
@@ -618,11 +539,6 @@
     // Parse URL params and bind to doctor uid based room
     const params = new URLSearchParams(location.search);
     const as = (params.get('as') || '').toLowerCase();
-    // Optional names from params
-    patientNameFromParams = (params.get('patientName') || params.get('pn') || '').trim();
-    doctorNameFromParams = (params.get('doctorName') || params.get('dn') || '').trim();
-    if (patientNameFromParams) try { localStorage.setItem('techmed_patient_name', patientNameFromParams); } catch(_) {}
-    if (doctorNameFromParams) try { localStorage.setItem('techmed_doctor_name', doctorNameFromParams); } catch(_) {}
     const hostUid = params.get('hostUid') || '';
     let roomFromParam = (params.get('room') || '').trim();
     // If no room provided but hostUid exists, derive doctor room id
@@ -632,12 +548,14 @@
       document.getElementById('roomIdInput').value = roomFromParam;
     }
 
-    // Set initial local label as soon as we know role (before presence commit)
+    // Name overrides via query params
     try {
-      const initialName = getDisplayName(as);
-      setLocalLabelName(initialName);
-      setAvatarSrc(localAvatarEl, initialName, auth.currentUser?.photoURL || '');
+      patientNameFromParams = (params.get('patientName') || params.get('patient') || params.get('name') || '').trim();
+      doctorNameFromParams = (params.get('doctorName') || params.get('doctor') || '').trim();
     } catch (_) {}
+
+    // Set initial local label as soon as we know role (before presence commit)
+    try { setLocalLabelName(getDisplayName(as)); } catch (_) {}
 
     // Auto initialize media, then auto create/join depending on role
     (async () => {
@@ -689,7 +607,7 @@
     });
 
     // Reposition labels on window resize
-    window.addEventListener('resize', () => { updateLabelsPosition(); updateAvatarsPosition(); });
+    window.addEventListener('resize', updateLabelsPosition);
   </script>
 </body>
 </html>
