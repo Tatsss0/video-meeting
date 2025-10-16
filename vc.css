@@ -200,6 +200,20 @@ header {
   box-shadow: 0 2px 6px rgba(0,0,0,0.25);
 }
 
+/* Avatar images displayed when camera is off */
+.video-avatar {
+  position: absolute;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #2d2f31;
+  border: 2px solid rgba(255,255,255,0.75);
+  z-index: 2; /* below labels, above video */
+  display: none; /* toggled dynamically */
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+}
+
 @media (max-width: 768px) {
   #localVideo { width: 120px; height: 90px; bottom: 80px; right: 15px; }
   .btn { width: 44px; height: 44px; font-size: 16px; }

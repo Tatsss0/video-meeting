@@ -17,6 +17,8 @@
   <div id="video-area">
     <video id="remoteVideo" autoplay playsinline></video>
     <video id="localVideo" autoplay playsinline muted></video>
+    <img id="remoteAvatar" class="video-avatar" alt="Remote avatar" />
+    <img id="localAvatar" class="video-avatar" alt="Your avatar" />
     <!-- Name labels over videos -->
     <div id="remoteLabel" class="video-label" aria-hidden="true">Waiting for participant…</div>
     <div id="localLabel" class="video-label" aria-hidden="true">You</div>
@@ -79,8 +81,12 @@
     const videoArea = document.getElementById('video-area');
     const localLabelEl = document.getElementById('localLabel');
     const remoteLabelEl = document.getElementById('remoteLabel');
+    const localAvatarEl = document.getElementById('localAvatar');
+    const remoteAvatarEl = document.getElementById('remoteAvatar');
     let selfMemberId = '';
     let selfDisplayName = '';
+    let localPhotoURL = '';
+    let remotePhotoURL = '';
 
     function setLocalLabelName(name) {
       selfDisplayName = name || selfDisplayName || 'You';
@@ -103,6 +109,48 @@
     function updateLabelsPosition() {
       updateLabelFor(remoteVideo, remoteLabelEl);
       updateLabelFor(localVideo, localLabelEl);
+    }
+
+    function setAvatarSrc(imgEl, name, url) {
+      if (!imgEl) return;
+      if (url) { imgEl.src = url; return; }
+      const initial = (name || 'User').trim().charAt(0).toUpperCase() || 'U';
+      const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='128' height='128'><rect width='100%' height='100%' fill='#2d2f31'/><text x='50%' y='54%' dominant-baseline='middle' text-anchor='middle' font-family='Arial, sans-serif' font-size='64' fill='#ffffff'>${initial}</text></svg>`;
+      imgEl.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+    }
+    function positionAvatarFor(videoEl, avatarEl) {
+      if (!videoEl || !avatarEl || !videoArea) return;
+      const areaRect = videoArea.getBoundingClientRect();
+      const rect = videoEl.getBoundingClientRect();
+      if (!rect.width || !rect.height) { avatarEl.style.opacity = '0'; return; }
+      const w = avatarEl.offsetWidth || 96;
+      const h = avatarEl.offsetHeight || 96;
+      const left = Math.round(rect.left - areaRect.left + (rect.width - w) / 2);
+      const top = Math.round(rect.top - areaRect.top + (rect.height - h) / 2);
+      avatarEl.style.left = left + 'px';
+      avatarEl.style.top = top + 'px';
+      avatarEl.style.opacity = '1';
+    }
+    function updateAvatarsPosition() {
+      positionAvatarFor(remoteVideo, remoteAvatarEl);
+      positionAvatarFor(localVideo, localAvatarEl);
+    }
+    function updateLocalAvatarVisibility() {
+      try {
+        const track = localStream && localStream.getVideoTracks()[0];
+        const show = !track || !track.enabled;
+        localAvatarEl.style.display = show ? 'block' : 'none';
+        if (show) updateAvatarsPosition();
+      } catch (_) {}
+    }
+    function updateRemoteAvatarVisibility() {
+      try {
+        const track = remoteStream && remoteStream.getVideoTracks()[0];
+        const hasVideo = !!track && track.readyState === 'live' && !track.muted && (remoteVideo.videoWidth || 0) > 0;
+        const show = !hasVideo;
+        remoteAvatarEl.style.display = show ? 'block' : 'none';
+        if (show) updateAvatarsPosition();
+      } catch (_) {}
     }
 
     function stopStream(stream) {
@@ -143,7 +191,7 @@
         remoteVideo.srcObject = remoteStream;
       }
       // position labels after streams are bound
-      setTimeout(updateLabelsPosition, 0);
+      setTimeout(() => { updateLabelsPosition(); updateAvatarsPosition(); updateLocalAvatarVisibility(); updateRemoteAvatarVisibility(); }, 0);
     }
 
     function showToast(message) {
@@ -175,6 +223,15 @@
         hideOverlay();
         setStatus('connected');
         updateLabelsPosition();
+        updateRemoteAvatarVisibility();
+        updateAvatarsPosition();
+        try {
+          e.streams[0].getVideoTracks().forEach(t => {
+            t.addEventListener('mute', updateRemoteAvatarVisibility);
+            t.addEventListener('unmute', updateRemoteAvatarVisibility);
+            t.addEventListener('ended', updateRemoteAvatarVisibility);
+          });
+        } catch (_) {}
       };
       peerConnection.onconnectionstatechange = () => {
         if (peerConnection.connectionState === 'connected') participantCount.textContent = '2';
@@ -184,6 +241,8 @@
           peerConnection.connectionState === 'connecting' ? 'connecting' : 'disconnected'
         );
         updateLabelsPosition();
+        updateRemoteAvatarVisibility();
+        updateAvatarsPosition();
       };
       return peerConnection;
     }
@@ -209,6 +268,7 @@
         uid: auth.currentUser?.uid || null,
         name,
         role: role || 'guest',
+        photoURL: auth.currentUser?.photoURL || null,
         active: true,
         updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
         joinedAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -216,6 +276,9 @@
       // Update local label details
       selfMemberId = pid;
       setLocalLabelName(name);
+      localPhotoURL = auth.currentUser?.photoURL || '';
+      setAvatarSrc(localAvatarEl, name, localPhotoURL);
+      updateLocalAvatarVisibility();
       updateLabelsPosition();
     }
 
@@ -237,11 +300,16 @@
         const remote = members.find(m => m._id !== selfMemberId);
         if (remote) {
           setRemoteLabelName(remote.name || (remote.role === 'doctor' ? 'Doctor' : 'Patient'));
+          remotePhotoURL = remote.photoURL || remote.photo || '';
+          setAvatarSrc(remoteAvatarEl, remote.name, remotePhotoURL);
+          updateRemoteAvatarVisibility();
         } else {
           setRemoteLabelName('Waiting for participant…');
+          remoteAvatarEl.style.display = 'none';
         }
         try { participantCount.textContent = String(Math.max(1, members.length)); } catch(_) {}
         updateLabelsPosition();
+        updateAvatarsPosition();
       });
     }
 
@@ -285,6 +353,8 @@
           peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
           participantCount.textContent = '2';
           updateLabelsPosition();
+          updateRemoteAvatarVisibility();
+          updateAvatarsPosition();
         }
       });
 
@@ -337,6 +407,8 @@
           participantCount.textContent = '2';
           hideOverlay();
           updateLabelsPosition();
+          updateRemoteAvatarVisibility();
+          updateAvatarsPosition();
           answered = true;
           // Keep offerCandidates listener for additional ICE; optionally stop listening to main doc
           // unsub && unsub();
@@ -385,6 +457,8 @@
         btn.classList.toggle('btn-off', !track.enabled);
         btn.setAttribute('aria-pressed', String(!track.enabled));
         showToast(track.enabled ? 'Camera on' : 'Camera off');
+        updateLocalAvatarVisibility();
+        updateAvatarsPosition();
       }
     };
     document.getElementById("leaveBtn").onclick = () => { cleanup(); location.reload(); };
@@ -444,8 +518,8 @@
     document.addEventListener("touchend", () => { isDragging = false; updateLabelsPosition(); });
 
     // Reposition labels when metadata (dimensions) load
-    localVideo.addEventListener('loadedmetadata', updateLabelsPosition);
-    remoteVideo.addEventListener('loadedmetadata', updateLabelsPosition);
+    localVideo.addEventListener('loadedmetadata', () => { updateLabelsPosition(); updateAvatarsPosition(); });
+    remoteVideo.addEventListener('loadedmetadata', () => { updateLabelsPosition(); updateAvatarsPosition(); });
 
     // Auto-hide controls & adjust remote video
     let hideControlsTimeout;
@@ -463,7 +537,7 @@
         updateLabelsPosition();
       }, 3000);
       // recalc immediately when controls become visible
-      requestAnimationFrame(updateLabelsPosition);
+      requestAnimationFrame(() => { updateLabelsPosition(); updateAvatarsPosition(); });
     }
     ["mousemove", "touchstart"].forEach(evt => { document.addEventListener(evt, showControls); });
     showControls();
@@ -484,7 +558,11 @@
     }
 
     // Set initial local label as soon as we know role (before presence commit)
-    try { setLocalLabelName(getDisplayName(as)); } catch (_) {}
+    try {
+      const initialName = getDisplayName(as);
+      setLocalLabelName(initialName);
+      setAvatarSrc(localAvatarEl, initialName, auth.currentUser?.photoURL || '');
+    } catch (_) {}
 
     // Auto initialize media, then auto create/join depending on role
     (async () => {
@@ -536,7 +614,7 @@
     });
 
     // Reposition labels on window resize
-    window.addEventListener('resize', updateLabelsPosition);
+    window.addEventListener('resize', () => { updateLabelsPosition(); updateAvatarsPosition(); });
   </script>
 </body>
 </html>
