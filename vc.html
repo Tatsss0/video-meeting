@@ -694,7 +694,7 @@
     patientNameFromParams = (params.get('patientName') || params.get('pn') || '').trim();
     doctorNameFromParams = (params.get('doctorName') || params.get('dn') || '').trim();
     patientIdFromParams = (params.get('patientId') || params.get('pid') || '').trim();
-    patientUidFromParams = (params.get('patientUid') || params.get('puid') || '').trim();
+    patientUidFromParams = (params.get('patientUid') || params.get('puid') || '').trim() || (localStorage.getItem('techmed_patient_uid') || '');
     if (patientNameFromParams) try { localStorage.setItem('techmed_patient_name', patientNameFromParams); } catch(_) {}
     if (doctorNameFromParams) try { localStorage.setItem('techmed_doctor_name', doctorNameFromParams); } catch(_) {}
     if (patientIdFromParams) try { localStorage.setItem('techmed_patient_id', patientIdFromParams); } catch(_) {}
@@ -732,6 +732,11 @@
       await new Promise(resolve => {
         try { firebase.auth().onAuthStateChanged(() => resolve()); } catch (_) { resolve(); }
       });
+      // If acting as patient and UID not provided, derive from current auth user
+      if (as === 'patient' && !patientUidFromParams && auth.currentUser?.uid) {
+        patientUidFromParams = auth.currentUser.uid;
+        try { localStorage.setItem('techmed_patient_uid', patientUidFromParams); } catch(_) {}
+      }
       try {
         showOverlay('Setting up your camera…');
         await ensureLocalStreams();
