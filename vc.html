@@ -320,6 +320,19 @@
       return '';
     }
 
+    async function improveLocalPatientNameFromUid() {
+      try {
+        const uid = patientUidFromParams || auth.currentUser?.uid || '';
+        if (!uid) return;
+        const best = await fetchProfileName(uid);
+        if (!best) return;
+        setLocalLabelName(best);
+        if (presenceDocRef) {
+          try { await presenceDocRef.set({ name: best }, { merge: true }); } catch(_) {}
+        }
+      } catch(_) {}
+    }
+
     function isGenericRoleName(name) {
       return /^(patient|doctor|guest|participant|user|you)$/i.test((name || '').trim());
     }
@@ -400,7 +413,8 @@
       updateLabelsPosition();
       // Try to refine the name from profile if only a generic fallback is set
       if (role === 'patient') {
-        improveLocalPatientNameFromId();
+        await improveLocalPatientNameFromUid();
+        await improveLocalPatientNameFromId();
       } else {
         improveLocalNameIfPossible(role);
       }
