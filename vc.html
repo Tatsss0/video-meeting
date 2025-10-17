@@ -91,6 +91,7 @@
     let patientNameFromParams = '';
     let doctorNameFromParams = '';
     let patientIdFromParams = '';
+    let patientUidFromParams = '';
 
     function setLocalLabelName(name) {
       selfDisplayName = name || selfDisplayName || 'You';
@@ -353,7 +354,13 @@
       try {
         const current = (remoteMember && (remoteMember.name || '')) || '';
         const uid = (remoteMember && (remoteMember.uid || remoteMember._id)) || '';
-        // Prefer patientId linkage when available
+        // Prefer patientUid linkage when available
+        const puid = (remoteMember && (remoteMember.patientUid || remoteMember.patientUID)) || callMeta.patientUid || callMeta.patientUID || '';
+        if (puid && isGenericRoleName(current)) {
+          const bestByPuid = await fetchProfileName(puid);
+          if (bestByPuid) { setRemoteLabelName(bestByPuid); return; }
+        }
+        // Then prefer patientId if available
         const pid = (remoteMember && remoteMember.patientId) || callMeta.patientId || '';
         if (pid && isGenericRoleName(current)) {
           const bestByPid = await fetchPatientNameById(pid);
@@ -378,6 +385,7 @@
         name,
         role: role || 'guest',
         photoURL: auth.currentUser?.photoURL || null,
+        patientUid: patientUidFromParams || null,
         patientId: patientIdFromParams || null,
         active: true,
         updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -469,6 +477,7 @@
         await peerConnection.setLocalDescription(offerDescription);
         const baseDoc = { offer: { type: offerDescription.type, sdp: offerDescription.sdp }, createdAt: Date.now() };
         if (patientIdFromParams) baseDoc.patientId = patientIdFromParams;
+        if (patientUidFromParams) baseDoc.patientUid = patientUidFromParams;
         await callDoc.set(baseDoc, { merge: true });
       } catch (e) {
         console.error('Failed to create offer', e);
@@ -532,8 +541,9 @@
           await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
           const answerDescription = await peerConnection.createAnswer();
           await peerConnection.setLocalDescription(answerDescription);
-          const mergeData = { answer: { type: answerDescription.type, sdp: answerDescription.sdp }, answeredAt: Date.now() };
+        const mergeData = { answer: { type: answerDescription.type, sdp: answerDescription.sdp }, answeredAt: Date.now() };
           if (patientIdFromParams) mergeData.patientId = patientIdFromParams;
+        if (patientUidFromParams) mergeData.patientUid = patientUidFromParams;
           await callDoc.set(mergeData, { merge: true });
           roomInfo.classList.add("slide-away");
           participantCount.textContent = '2';
@@ -684,9 +694,11 @@
     patientNameFromParams = (params.get('patientName') || params.get('pn') || '').trim();
     doctorNameFromParams = (params.get('doctorName') || params.get('dn') || '').trim();
     patientIdFromParams = (params.get('patientId') || params.get('pid') || '').trim();
+    patientUidFromParams = (params.get('patientUid') || params.get('puid') || '').trim();
     if (patientNameFromParams) try { localStorage.setItem('techmed_patient_name', patientNameFromParams); } catch(_) {}
     if (doctorNameFromParams) try { localStorage.setItem('techmed_doctor_name', doctorNameFromParams); } catch(_) {}
     if (patientIdFromParams) try { localStorage.setItem('techmed_patient_id', patientIdFromParams); } catch(_) {}
+    if (patientUidFromParams) try { localStorage.setItem('techmed_patient_uid', patientUidFromParams); } catch(_) {}
     const hostUid = params.get('hostUid') || '';
     let roomFromParam = (params.get('room') || '').trim();
     // If no room provided but hostUid exists, derive doctor room id
@@ -704,6 +716,13 @@
       // If this is the patient and we have a patientId, try to resolve immediately
       if (as === 'patient' && patientIdFromParams) {
         improveLocalPatientNameFromId();
+      }
+      // If patientUid is available, prefer resolving by UID
+      if (as === 'patient' && patientUidFromParams) {
+        try {
+          const best = await fetchProfileName(patientUidFromParams);
+          if (best) setLocalLabelName(best);
+        } catch(_) {}
       }
     } catch (_) {}
 
