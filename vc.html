@@ -65,6 +65,8 @@
     const auth = firebase.auth();
 
     let localStream, remoteStream, peerConnection, screenStream;
+    // Queue for remote ICE candidates that arrive before remoteDescription is set
+    let pendingRemoteIceCandidates = [];
     const servers = { iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }] };
 
     const localVideo = document.getElementById("localVideo");
@@ -230,6 +232,7 @@
         updateLabelsPosition();
         updateRemoteAvatarVisibility();
         updateAvatarsPosition();
+        try { remoteVideo.muted = false; remoteVideo.play().catch(()=>{}); } catch(_) {}
         try {
           e.streams[0].getVideoTracks().forEach(t => {
             t.addEventListener('mute', updateRemoteAvatarVisibility);
@@ -500,20 +503,31 @@
         return;
       }
 
-      callDoc.onSnapshot(snapshot => {
+      callDoc.onSnapshot(async (snapshot) => {
         const data = snapshot.data();
         if (data?.answer && !peerConnection.currentRemoteDescription) {
-          peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+          try { await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer)); } catch(err) { console.warn('setRemoteDescription(answer) failed', err); }
           participantCount.textContent = '2';
           updateLabelsPosition();
           updateRemoteAvatarVisibility();
           updateAvatarsPosition();
+          // Flush queued ICE now that remoteDescription is set
+          try {
+            for (const queued of pendingRemoteIceCandidates.splice(0)) {
+              try { await peerConnection.addIceCandidate(new RTCIceCandidate(queued)); } catch(err) { console.warn('flush ICE (offerer) failed', err); }
+            }
+          } catch(_) {}
         }
       });
 
-      answerCandidates.onSnapshot(snapshot => snapshot.docChanges().forEach(change => {
+      answerCandidates.onSnapshot(snapshot => snapshot.docChanges().forEach(async change => {
         if (change.type === "added") {
-          peerConnection.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+          const cand = change.doc.data();
+          if (!peerConnection || !peerConnection.remoteDescription) {
+            pendingRemoteIceCandidates.push(cand);
+            return;
+          }
+          try { await peerConnection.addIceCandidate(new RTCIceCandidate(cand)); } catch(err) { console.warn('addIceCandidate(answer side) failed', err); }
         }
       }));
 
@@ -534,9 +548,14 @@
       // Send our ICE candidates as the answerer
       peerConnection.onicecandidate = e => { if (e.candidate) answerCandidates.add(e.candidate.toJSON()); };
       // Listen for remote ICE from the doctor immediately
-      offerCandidates.onSnapshot(snapshot => snapshot.docChanges().forEach(change => {
+      offerCandidates.onSnapshot(snapshot => snapshot.docChanges().forEach(async change => {
         if (change.type === "added") {
-          try { peerConnection.addIceCandidate(new RTCIceCandidate(change.doc.data())); } catch(_) {}
+          const cand = change.doc.data();
+          if (!peerConnection || !peerConnection.remoteDescription) {
+            pendingRemoteIceCandidates.push(cand);
+            return;
+          }
+          try { await peerConnection.addIceCandidate(new RTCIceCandidate(cand)); } catch(_) {}
         }
       }));
       setStatus('connecting');
@@ -565,6 +584,12 @@
           updateLabelsPosition();
           updateRemoteAvatarVisibility();
           updateAvatarsPosition();
+          // Flush queued ICE once remoteDescription is set
+          try {
+            for (const queued of pendingRemoteIceCandidates.splice(0)) {
+              try { await peerConnection.addIceCandidate(new RTCIceCandidate(queued)); } catch(err) { console.warn('flush ICE (answerer) failed', err); }
+            }
+          } catch(_) {}
           answered = true;
           // Keep offerCandidates listener for additional ICE; optionally stop listening to main doc
           // unsub && unsub();
