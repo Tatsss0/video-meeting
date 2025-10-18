@@ -67,7 +67,9 @@
     let localStream, remoteStream, peerConnection, screenStream;
     // Queue for remote ICE candidates that arrive before remoteDescription is set
     let pendingRemoteIceCandidates = [];
-    const servers = { iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }] };
+    const servers = (window.ICE_SERVERS && Array.isArray(window.ICE_SERVERS))
+      ? { iceServers: window.ICE_SERVERS, iceCandidatePoolSize: 10 }
+      : { iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }], iceCandidatePoolSize: 10 };
 
     const localVideo = document.getElementById("localVideo");
     const remoteVideo = document.getElementById("remoteVideo");
