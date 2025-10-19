@@ -168,7 +168,13 @@
     }
 
     async function leavePresence() {
-      try { if (presenceDocRef) await presenceDocRef.set({ active:false, leftAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true }); } catch(_) {}
+      try {
+        if (presenceHeartbeatTimer) { try { clearInterval(presenceHeartbeatTimer); } catch(_) {} presenceHeartbeatTimer = null; }
+        if (presenceDocRef) {
+          await presenceDocRef.set({ active:false, leftAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+          presenceDocRef = null;
+        }
+      } catch(_) {}
     }
 
     function cleanup() {
@@ -392,12 +398,37 @@
       } catch (_) {}
     }
 
+    async function ensureRoleSlotAvailable(roomId, role) {
+      try {
+        const snap = await db.collection('calls').doc(roomId).collection('members').get();
+        const now = Date.now();
+        const ttlMs = 30000;
+        let hasDoctor = false, hasPatient = false;
+        snap.forEach(d => {
+          const m = d.data() || {};
+          if (m.active === false) return;
+          if (m.role !== 'doctor' && m.role !== 'patient') return;
+          const uAt = (m.updatedAt && m.updatedAt.toMillis) ? m.updatedAt.toMillis() : 0;
+          if (uAt && (now - uAt) > ttlMs) return;
+          if (m.role === 'doctor') hasDoctor = true; else if (m.role === 'patient') hasPatient = true;
+        });
+        if (role === 'doctor' && hasDoctor) return false;
+        if (role === 'patient' && hasPatient) return false;
+        return true;
+      } catch(_) { return true; }
+    }
+
     async function enterPresence(roomId, role) {
       currentRoomId = roomId;
       // Pick stable id for presence
       let pid = auth.currentUser?.uid || localStorage.getItem('techmed_member_id');
       if (!pid) { pid = 'anon_' + Math.random().toString(36).slice(2, 10); localStorage.setItem('techmed_member_id', pid); }
       const name = getDisplayName(role);
+      // Enforce single doctor and single patient in presence
+      if (role === 'doctor' || role === 'patient') {
+        const ok = await ensureRoleSlotAvailable(roomId, role);
+        if (!ok) { showToast((role === 'doctor' ? 'Doctor' : 'Patient') + ' slot is occupied'); return; }
+      }
       presenceDocRef = db.collection('calls').doc(roomId).collection('members').doc(pid);
       await presenceDocRef.set({
         uid: auth.currentUser?.uid || null,
@@ -410,6 +441,11 @@
         updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
         joinedAt: firebase.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
+      // Heartbeat to keep presence fresh
+      if (presenceHeartbeatTimer) { try { clearInterval(presenceHeartbeatTimer); } catch(_) {} }
+      presenceHeartbeatTimer = setInterval(() => {
+        try { presenceDocRef && presenceDocRef.set({ active: true, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true }); } catch(_) {}
+      }, 12000);
       // Update local label details
       selfMemberId = pid;
       setLocalLabelName(name);
@@ -437,8 +473,20 @@
 
       const listEl = document.getElementById('membersList');
       membersUnsub = db.collection('calls').doc(roomId).collection('members').onSnapshot((snap) => {
-        const members = [];
-        snap.forEach(d => { const m = d.data() || {}; if (m.active !== false) members.push({ ...m, _id: d.id }); });
+        const now = Date.now();
+        const ttlMs = 30000;
+        const byRole = { doctor: null, patient: null };
+        snap.forEach(d => {
+          const m = d.data() || {};
+          if (m.active === false) return;
+          if (m.role !== 'doctor' && m.role !== 'patient') return;
+          const uAt = (m.updatedAt && m.updatedAt.toMillis) ? m.updatedAt.toMillis() : 0;
+          if (uAt && (now - uAt) > ttlMs) return;
+          const entry = { ...m, _id: d.id, _updatedAtMs: uAt };
+          const prev = byRole[m.role];
+          if (!prev || (entry._updatedAtMs || 0) >= (prev._updatedAtMs || 0)) byRole[m.role] = entry;
+        });
+        const members = [byRole.doctor, byRole.patient].filter(Boolean);
         if (listEl) {
           listEl.innerHTML = '';
           members.forEach(m => {
@@ -447,14 +495,15 @@
             listEl.appendChild(li);
           });
         }
-        // Determine remote participant's name (first active member that's not me)
-        const remote = members.find(m => m._id !== selfMemberId);
+        // Determine remote participant (the other role)
+        const myUid = auth.currentUser?.uid || '';
+        const myEntry = members.find(m => (m.uid || '') === myUid) || members.find(m => m._id === selfMemberId);
+        const remote = members.find(m => m !== myEntry) || members.find(m => m._id !== selfMemberId);
         if (remote) {
           const roleFallback = remote.role === 'doctor' ? 'Doctor' : 'Patient';
           const compositeName = [remote.firstName, remote.lastName].filter(Boolean).join(' ');
           const firstLabel = preferName(remote.name, remote.fullName, compositeName, remote.displayName, roleFallback);
           setRemoteLabelName(firstLabel);
-          // Attempt to improve remote name if only a generic label is present
           if (isGenericRoleName(firstLabel)) maybeResolveRemoteName(remote);
           remotePhotoURL = remote.photoURL || remote.photo || '';
           setAvatarSrc(remoteAvatarEl, remote.name, remotePhotoURL);
