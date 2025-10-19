@@ -770,9 +770,16 @@
     // Auto initialize media, then auto create/join depending on role
     (async () => {
       // Ensure auth state is loaded (if rules require auth)
+      // Ensure auth is ready; if rules require auth, sign in anonymously
       await new Promise(resolve => {
         try { firebase.auth().onAuthStateChanged(() => resolve()); } catch (_) { resolve(); }
       });
+      if (auth && !auth.currentUser) {
+        try { await auth.signInAnonymously(); } catch (e) { console.warn('Anonymous sign-in failed', e); }
+        await new Promise(resolve => {
+          try { firebase.auth().onAuthStateChanged(() => resolve()); } catch (_) { resolve(); }
+        });
+      }
       // If acting as patient and UID not provided, derive from current auth user
       if (as === 'patient' && !patientUidFromParams && auth.currentUser?.uid) {
         patientUidFromParams = auth.currentUser.uid;
